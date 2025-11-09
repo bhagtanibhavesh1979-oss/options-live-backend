@@ -5,41 +5,35 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Angel One API proxy - to avoid CORS issues on mobile
-app.post('/api/get-price', async (req, res) => {
-  try {
-    const { symbol, authToken } = req.body;
-    
-    const response = await fetch('https://apiconnect.angelbroking.com/rest/secure/angelbroking/market/v1/quote/', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${authToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        mode: "FULL",
-        exchange: "NSE",
-        tradingSymbol: symbol,
-        symbolToken: getSymbolToken(symbol)
-      })
-    });
-    
-    const data = await response.json();
-    res.json(data);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+// Simple test endpoint
+app.get('/api/test', (req, res) => {
+  res.json({ 
+    status: 'Server is working!',
+    message: 'Backend is running correctly'
+  });
 });
 
-function getSymbolToken(symbol) {
-  const tokens = {
-    'NIFTY': '99926000',
-    'BANKNIFTY': '99926009', 
-    'FINNIFTY': '99926037'
+// Mock prices endpoint for testing
+app.get('/api/prices', (req, res) => {
+  const mockPrices = {
+    'NIFTY': '22540.75',
+    'BANKNIFTY': '48520.30', 
+    'FINNIFTY': '21280.45',
+    'SENSEX': '74520.60'
   };
-  return tokens[symbol] || '99926000';
-}
+  
+  res.json({ prices: mockPrices });
+});
 
-app.listen(3000, () => {
-  console.log('Server running on port 3000');
+// Health check
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'Options Trading Backend is running!',
+    timestamp: new Date().toISOString()
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
