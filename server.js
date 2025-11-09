@@ -8,99 +8,64 @@ app.use(express.json());
 
 const ANGEL_ONE_SCRIP_MASTER_URL = 'https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json';
 
-let scriptMasterData = null;
-let lastFetchTime = null;
-
-async function fetchScriptMasterData() {
-  try {
-    const response = await axios.get(ANGEL_ONE_SCRIP_MASTER_URL);
-    scriptMasterData = response.data;
-    lastFetchTime = Date.now();
-    console.log('✅ Script master data fetched successfully');
-    return scriptMasterData;
-  } catch (error) {
-    console.error('❌ Failed to fetch script master data:', error.message);
-    throw error;
-  }
-}
-
-// Get real previous close prices from Angel One API
 app.get('/api/prices', async (req, res) => {
   try {
-    // Always fetch fresh data
-    await fetchScriptMasterData();
+    console.log('📡 Fetching real prices from Angel One...');
+    const response = await axios.get(ANGEL_ONE_SCRIP_MASTER_URL);
+    const scriptData = response.data;
 
-    // Find the actual index data from Angel One
-    const nifty = scriptMasterData.find(item => 
-      item.name === 'NIFTY' && item.exch_seg === 'NSE'
-    );
-    
-    const banknifty = scriptMasterData.find(item => 
-      item.name === 'BANKNIFTY' && item.exch_seg === 'NSE'
-    );
-    
-    const finnifty = scriptMasterData.find(item => 
-      item.name === 'FINNIFTY' && item.exch_seg === 'NSE'
-    );
-    
-    const sensex = scriptMasterData.find(item => 
-      item.name === 'SENSEX' && item.exch_seg === 'BSE'
-    );
-
-    // Use ACTUAL previous close prices from Angel One
-    const prices = {
-      'NIFTY': nifty ? parseFloat(nifty.prev_close).toFixed(2) : '0',
-      'BANKNIFTY': banknifty ? parseFloat(banknifty.prev_close).toFixed(2) : '0',
-      'FINNIFTY': finnifty ? parseFloat(finnifty.prev_close).toFixed(2) : '0',
-      'SENSEX': sensex ? parseFloat(sensex.prev_close).toFixed(2) : '0'
+    // Find real index data from Angel One API
+    const findIndexPrice = (name, exch) => {
+      const item = scriptData.find(script => 
+        script.name === name && script.exch_seg === exch
+      );
+      return item ? parseFloat(item.prev_close).toFixed(2) : null;
     };
+
+    // Get REAL prices from Angel One API
+    const prices = {
+      'NIFTY': findIndexPrice('NIFTY', 'NSE'),
+      'BANKNIFTY': findIndexPrice('BANKNIFTY', 'NSE'),
+      'FINNIFTY': findIndexPrice('FINNIFTY', 'NSE'),
+      'SENSEX': findIndexPrice('SENSEX', 'BSE')
+    };
+
+    console.log('✅ Real prices fetched:', prices);
 
     res.json({
       success: true,
       prices: prices,
-      source: 'Angel One Previous Close Prices',
-      timestamp: new Date().toISOString(),
-      dataSource: 'Real API Data'
+      source: 'Angel One Live API',
+      timestamp: new Date().toISOString()
     });
 
   } catch (error) {
-    console.error('Error fetching real prices:', error);
-    
-    res.json({
+    console.error('❌ Failed to fetch real prices:', error.message);
+    res.status(500).json({
       success: false,
-      prices: {
-        'NIFTY': '0',
-        'BANKNIFTY': '0', 
-        'FINNIFTY': '0',
-        'SENSEX': '0'
-      },
-      source: 'API Failed',
-      timestamp: new Date().toISOString(),
-      error: error.message
+      error: 'Failed to fetch real prices from Angel One',
+      timestamp: new Date().toISOString()
     });
   }
 });
 
-// Test endpoint
 app.get('/api/test', (req, res) => {
   res.json({ 
-    status: 'SUCCESS',
-    message: 'Server with REAL Angel One data',
+    status: 'SUCCESS', 
+    message: 'Backend with REAL Angel One data',
     timestamp: new Date().toISOString()
   });
 });
 
-// Root endpoint
 app.get('/', (req, res) => {
   res.json({ 
     message: '✅ Options Trading - Real Angel One Data',
-    timestamp: new Date().toISOString(),
-    endpoints: ['/', '/api/test', '/api/prices']
+    timestamp: new Date().toISOString()
   });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server running on port ${PORT}`);
-  console.log('📡 Fetching real data from Angel One API');
+  console.log('📡 Ready to fetch REAL prices from Angel One');
 });
