@@ -9,278 +9,163 @@ const wss = new WebSocket.Server({ server: http });
 app.use(cors());
 app.use(express.json());
 
-// Store live prices and client connections in memory
 let livePrices = {};
-let clientConnections = new Map(); // Store WebSocket connections and their credentials
+let liveOptionPrices = {}; // { "NIFTY": { "25500-CE": 120.25, "25500-PE": 58.15 } }
+let clientConnections = new Map();
 
-// Angel One WebSocket connection
-let angelWs = null;
-let reconnectTimeout = null;
-
-// Function to connect to Angel One WebSocket
-async function connectAngelOneWebSocket() {
-    try {
-        console.log('📡 Connecting to Angel One WebSocket...');
-        
-        // First get the JWT token
-        const response = await axios.post('https://apiconnect.angelbroking.com/rest/auth/angelbroking/user/v1/loginByPassword', 
-            {
-                "clientcode": process.env.ANGEL_CLIENT_CODE,
-                "password": process.env.ANGEL_PIN,
-                "totp": process.env.ANGEL_TOTP
-            },
-            {
-                headers: {
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "X-UserType": "USER",
-                    "X-SourceID": "WEB",
-                    "X-ClientLocalIP": "192.168.0.1",
-                    "X-ClientPublicIP": "106.193.147.98",
-                    "X-MACAddress": "00-1B-44-11-3A-B7",
-                    "X-PrivateKey": process.env.ANGEL_API_KEY
-                }
-            }
-        );
-
-        if (!response.data.data?.jwtToken) {
-            throw new Error('Failed to get JWT token');
-        }
-
-        const jwtToken = response.data.data.jwtToken;
-        const wsUrl = `wss://smartapisocket.angelbroking.com/websocket?jwttoken=${jwtToken}&clientcode=${process.env.ANGEL_CLIENT_CODE}&apikey=${process.env.ANGEL_API_KEY}`;
-        
-        angelWs = new WebSocket(wsUrl);
-
-        angelWs.on('open', () => {
-            console.log('✅ Connected to Angel One WebSocket');
-            // Subscribe to indices
-            const subscribeMsg = {
-                "task": "mw",
-                "channel": "1",
-                "token": [
-                    "26000",  // NIFTY
-                    "26009",  // BANKNIFTY
-                    "26017",  // FINNIFTY
-                    "26074",  // MIDCPNIFTY
-                    "26001"   // SENSEX
-                ],
-                "user": process.env.ANGEL_CLIENT_CODE,
-                "acctid": process.env.ANGEL_CLIENT_CODE
-            };
-            angelWs.send(JSON.stringify(subscribeMsg));
-        });
-
-        angelWs.on('message', (data) => {
-            try {
-                const message = JSON.parse(data);
-                if (message.tk && message.ltp) {
-                    // Map token to index name
-                    const tokenMap = {
-                        '26000': 'NIFTY',
-                        '26009': 'BANKNIFTY',
-                        '26017': 'FINNIFTY',
-                        '26074': 'MIDCPNIFTY',
-                        '26001': 'SENSEX'
-                    };
-
-                    const indexName = tokenMap[message.tk];
-                    if (indexName) {
-                        livePrices[indexName] = parseFloat(message.ltp).toFixed(2);
-                        console.log(`💹 ${indexName}: ${livePrices[indexName]}`);
-                        
-                        // Broadcast to all connected clients
-                        wss.clients.forEach(client => {
-                            if (client.readyState === WebSocket.OPEN) {
-                                client.send(JSON.stringify({
-                                    index: indexName,
-                                    price: livePrices[indexName],
-                                    timestamp: new Date().toISOString()
-                                }));
-                            }
-                        });
-                    }
-                }
-            } catch (error) {
-                console.error('Error processing message:', error);
-            }
-        });
-
-        angelWs.on('close', () => {
-            console.log('❌ Angel One WebSocket closed. Reconnecting in 5s...');
-            // Try to reconnect after 5 seconds
-            clearTimeout(reconnectTimeout);
-            reconnectTimeout = setTimeout(connectAngelOneWebSocket, 5000);
-        });
-
-        angelWs.on('error', (error) => {
-            console.error('WebSocket error:', error);
-        });
-
-    } catch (error) {
-        console.error('Failed to connect to Angel One:', error);
-        // Try to reconnect after 5 seconds
-        clearTimeout(reconnectTimeout);
-        reconnectTimeout = setTimeout(connectAngelOneWebSocket, 5000);
+// Helper: find option tokens for expiry/strikes
+async function fetchOptionTokens(symbol, expiry, spot, numStrikes, apiKey) {
+    const url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json";
+    const d = (await axios.get(url)).data;
+    // Find strikes (±numStrikes * interval, around ATM)
+    const strikeInterval = symbol === 'NIFTY' ? 50 : 100;
+    const atmStrike = Math.round(spot / strikeInterval) * strikeInterval;
+    let desiredStrikes = [];
+    for (let i = -numStrikes; i <= numStrikes; i++) {
+        desiredStrikes.push(atmStrike + i * strikeInterval);
     }
+    const tokens = [];
+    d.forEach(item => {
+        if (
+            item.name === symbol && item.instrumenttype === "OPTIDX" &&
+            String(item.expiry).startsWith(expiry) && desiredStrikes.includes(Number(item.strike))
+        ) {
+            tokens.push({ token: item.token, strike: Number(item.strike), optiontype: item.optiontype });
+        }
+    });
+    return tokens;
 }
 
-// Handle client authentication and WebSocket connection
+// Angel One login function
+async function loginAngelOne(clientCode, pin, totp, apiKey) {
+    const res = await axios.post(
+        'https://apiconnect.angelbroking.com/rest/auth/angelbroking/user/v1/loginByPassword',
+        { clientcode: clientCode, password: pin, totp },
+        { headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-UserType": "USER",
+            "X-SourceID": "WEB",
+            "X-ClientLocalIP": "192.168.0.1",
+            "X-ClientPublicIP": "106.193.147.98",
+            "X-MACAddress": "00-1B-44-11-3A-B7",
+            "X-PrivateKey": apiKey
+        } }
+    );
+    if (!res.data.data?.jwtToken) throw new Error('Angel One login failed');
+    return res.data.data.jwtToken;
+}
+
+// Client requests connection (with expiry/numStrikes/etc)
 app.post('/api/connect', async (req, res) => {
-    const { api_key, client_code, pin, totp } = req.body;
-    
-    if (!api_key || !client_code || !pin || !totp) {
-        return res.status(400).json({ 
-            success: false, 
-            error: 'Missing credentials' 
-        });
+    const { api_key, client_code, pin, totp, symbol, expiry, numStrikes } = req.body;
+    if (!api_key || !client_code || !pin || !totp || !symbol || !expiry || !numStrikes) {
+        return res.status(400).json({ success: false, error: 'Missing fields' });
     }
-
     try {
-        const response = await axios.post(
-            'https://apiconnect.angelbroking.com/rest/auth/angelbroking/user/v1/loginByPassword',
-            {
-                "clientcode": client_code,
-                "password": pin,
-                "totp": totp
-            },
-            {
-                headers: {
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                    "X-UserType": "USER",
-                    "X-SourceID": "WEB",
-                    "X-ClientLocalIP": "192.168.0.1",
-                    "X-ClientPublicIP": "106.193.147.98",
-                    "X-MACAddress": "00-1B-44-11-3A-B7",
-                    "X-PrivateKey": api_key
-                }
-            }
-        );
-
-        if (response.data.status && response.data.data?.jwtToken) {
-            // Generate a unique connection ID
-            const connectionId = Math.random().toString(36).substring(7);
-            
-            res.json({
-                success: true,
-                connectionId,
-                token: response.data.data.jwtToken
-            });
-        } else {
-            res.status(401).json({
-                success: false,
-                error: response.data.message || 'Authentication failed'
-            });
-        }
-    } catch (error) {
-        console.error('Login error:', error.message);
-        res.status(500).json({
-            success: false,
-            error: 'Authentication failed'
-        });
+        // Dummy spot for now—better to call live prices (see below)
+        const spotPrice = livePrices[symbol] ? Number(livePrices[symbol]) : (symbol === 'NIFTY' ? 23500 : 50000);
+        const tokens = await fetchOptionTokens(symbol, expiry, spotPrice, numStrikes, api_key);
+        const jwtToken = await loginAngelOne(client_code, pin, totp, api_key);
+        const connectionId = Math.random().toString(36).substring(7);
+        // Store session (if needed)
+        clientConnections.set(connectionId, { symbol, expiry, numStrikes, tokens, jwtToken });
+        res.json({ success: true, connectionId, token: jwtToken, tokens });
+    } catch (e) {
+        res.status(500).json({ success: false, error: e.toString() });
     }
 });
 
-// Handle client WebSocket connections
+// REST endpoint: returns latest option chain and spot (best for Expo app)
+app.get('/api/prices', (req, res) => {
+    const symbol = req.query.symbol || "NIFTY";
+    const optionData = [];
+    if (liveOptionPrices[symbol]) {
+        Object.entries(liveOptionPrices[symbol]).forEach(([key, ltp]) => {
+            let [strike, type] = key.split('-');
+            let record = optionData.find(r => r.strike === Number(strike));
+            if (!record) {
+                record = { strike: Number(strike), call: {}, put: {} };
+                optionData.push(record);
+            }
+            if (type === "CE") record.call.ltp = Number(ltp);
+            if (type === "PE") record.put.ltp = Number(ltp);
+        });
+    }
+    res.json({
+        success: true,
+        prices: livePrices,
+        optionChain: { [symbol]: optionData },
+        timestamp: new Date().toISOString()
+    });
+});
+
+// When client connects to WS, start an Angel One WS for price and options
 wss.on('connection', async (ws, req) => {
-    console.log('📱 Client attempting to connect...');
-    
-    // Parse connection parameters
     const params = new URLSearchParams(req.url.split('?')[1]);
     const connectionId = params.get('connectionId');
     const jwtToken = params.get('token');
-    
-    if (!connectionId || !jwtToken) {
-        ws.close(1008, 'Missing authentication');
-        return;
-    }
+    const clientSession = clientConnections.get(connectionId);
+    if (!jwtToken || !clientSession) return ws.close();
 
-    console.log('📱 Client authenticated, setting up connection...');
-    clientConnections.set(connectionId, ws);
+    const angelWs = new WebSocket(`wss://smartapisocket.angelbroking.com/websocket?jwttoken=${jwtToken}`);
+    angelWs.on('open', () => {
+        // Subscribe to index and options
+        let subscribeMsg = {
+            task: "mw",
+            channel: "1",
+            token: [
+                clientSession.symbol === 'NIFTY' ? "26000" : "26009", // Index token
+                ...clientSession.tokens.map(t => t.token)
+            ]
+        };
+        angelWs.send(JSON.stringify(subscribeMsg));
+    });
 
-    // Start Angel One WebSocket connection for this client
-    try {
-        const angelWs = new WebSocket(`wss://smartapisocket.angelbroking.com/websocket?jwttoken=${jwtToken}`);
-        
-        angelWs.on('open', () => {
-            console.log('✅ Connected to Angel One WebSocket');
-            // Subscribe to indices
-            const subscribeMsg = {
-                "task": "mw",
-                "channel": "1",
-                "token": [
-                    "26000",  // NIFTY
-                    "26009",  // BANKNIFTY
-                    "26017",  // FINNIFTY
-                    "26074",  // MIDCPNIFTY
-                    "26001"   // SENSEX
-                ]
-            };
-            angelWs.send(JSON.stringify(subscribeMsg));
-        });
-
-        angelWs.on('message', (data) => {
-            try {
-                const message = JSON.parse(data);
-                if (message.tk && message.ltp) {
-                    // Map token to index name
-                    const tokenMap = {
-                        '26000': 'NIFTY',
-                        '26009': 'BANKNIFTY',
-                        '26017': 'FINNIFTY',
-                        '26074': 'MIDCPNIFTY',
-                        '26001': 'SENSEX'
-                    };
-
-                    const indexName = tokenMap[message.tk];
-                    if (indexName) {
-                        livePrices[indexName] = parseFloat(message.ltp).toFixed(2);
-                        // Send update to this specific client
+    angelWs.on('message', (data) => {
+        try {
+            const message = JSON.parse(data);
+            // Index tokens (e.g. spot price)
+            if (message.tk && message.ltp) {
+                // Save index price
+                if (["26000","26009","26017"].includes(String(message.tk))) {
+                    livePrices[clientSession.symbol] = Number(message.ltp).toFixed(2);
+                    ws.send(JSON.stringify({
+                        index: clientSession.symbol,
+                        spot: Number(message.ltp),
+                        timestamp: new Date().toISOString()
+                    }));
+                } else {
+                    // Option token
+                    const tokenObj = clientSession.tokens.find(t => t.token == message.tk);
+                    if (tokenObj) {
+                        // Store as liveOptionPrices[symbol]["strike-type"] = ltp
+                        const priceKey = `${tokenObj.strike}-${tokenObj.optiontype}`;
+                        if (!liveOptionPrices[clientSession.symbol]) liveOptionPrices[clientSession.symbol] = {};
+                        liveOptionPrices[clientSession.symbol][priceKey] = Number(message.ltp).toFixed(2);
                         ws.send(JSON.stringify({
-                            index: indexName,
-                            price: livePrices[indexName],
+                            index: clientSession.symbol,
+                            strike: tokenObj.strike,
+                            type: tokenObj.optiontype,
+                            ltp: Number(message.ltp),
                             timestamp: new Date().toISOString()
                         }));
                     }
                 }
-            } catch (error) {
-                console.error('Error processing message:', error);
             }
-        });
+        } catch (error) {
+            console.error('Error processing message:', error);
+        }
+    });
 
-        ws.on('close', () => {
-            console.log('📱 Client disconnected');
-            clientConnections.delete(connectionId);
-            angelWs.close();
-        });
-
-    } catch (error) {
-        console.error('Error setting up Angel One connection:', error);
-        ws.close(1011, 'Failed to connect to Angel One');
-    }
-});
-
-// REST endpoint for current prices
-app.get('/api/prices', (req, res) => {
-    res.json({
-        success: true,
-        prices: livePrices,
-        source: 'Angel One Live WebSocket',
-        timestamp: new Date().toISOString()
+    ws.on('close', () => {
+        angelWs.close();
     });
 });
 
+// Static endpoint and server start
 app.get('/', (req, res) => {
-    res.json({ 
-        message: '✅ Options Trading - LIVE Angel One Data',
-        timestamp: new Date().toISOString()
-    });
+    res.json({ message: '✅ Options Trading - LIVE', timestamp: new Date().toISOString() });
 });
-
 const PORT = process.env.PORT || 3000;
-http.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ Server running on port ${PORT}`);
-    // Connect to Angel One WebSocket
-    connectAngelOneWebSocket();
-});
+http.listen(PORT, '0.0.0.0', () => { console.log(`✅ Server running on port ${PORT}`); });
