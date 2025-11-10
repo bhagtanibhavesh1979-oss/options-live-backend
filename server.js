@@ -57,11 +57,16 @@ async function loginAngelOne(clientCode, pin, totp, apiKey) {
 }
 
 // Client requests connection (with expiry/numStrikes/etc)
-app.post('/api/connect', async (req, res) => {
-    const { api_key, client_code, pin, totp, symbol, expiry, numStrikes } = req.body;
-    if (!api_key || !client_code || !pin || !totp || !symbol || !expiry || !numStrikes) {
-        return res.status(400).json({ success: false, error: 'Missing fields' });
-    }
+app.post('/api/connect', (req, res) => {
+  const { api_key, client_code, pin, totp } = req.body;
+  
+  console.log('Received:', req.body); // Add this log
+  
+  if (!api_key || !client_code || !pin || !totp) {
+    return res.json({ success: false, error: "Missing fields" });
+  }
+  // ... rest of login logic
+});
     try {
         // Dummy spot for now—better to call live prices (see below)
         const spotPrice = livePrices[symbol] ? Number(livePrices[symbol]) : (symbol === 'NIFTY' ? 23500 : 50000);
