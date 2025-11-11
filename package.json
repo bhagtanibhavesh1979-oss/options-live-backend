@@ -1,15 +1,12 @@
 {
-  "name": "options-live-backend",
-  "version": "1.0.0",
-  "description": "Live options data from Angel One",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
   "dependencies": {
-    "express": "^4.18.2",
+    "react-native": "0.72.0",
+    "@react-native-async-storage/async-storage": "^1.19.0",
+    "react": "18.2.0",
+    "express": "^4.18.0",
     "cors": "^2.8.5",
-    "axios": "^1.6.7",
-    "ws": "^8.16.0"
+    "axios": "^1.5.0",
+    "speakeasy": "^2.0.0",
+    "dotenv": "^16.3.0"
   }
 }
