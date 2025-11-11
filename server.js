@@ -1,48 +1,54 @@
-// Client requests connection (with expiry/numStrikes/etc)
-app.post('/api/connect', async (req, res) => {
-  const { api_key, client_code, pin, totp } = req.body;
-  
-  console.log('📥 Received login request:', req.body);
-  
-  if (!api_key || !client_code || !pin || !totp) {
-    console.log('❌ Missing fields detected');
-    return res.json({ success: false, error: "Missing fields" });
-  }
-
+// Add this to your server.js - Fix the sessionExpiry issue
+app.post('/api/login', async (req, res) => {
   try {
-    console.log('🔐 Attempting Angel One login...');
-    
-    // Dummy values for testing - you can make these configurable later
-    const symbol = "NIFTY";
-    const expiry = "2024-DEC"; // You might want to make this dynamic
-    const numStrikes = 3;
-    
-    // Get spot price or use default
-    const spotPrice = livePrices[symbol] ? Number(livePrices[symbol]) : (symbol === 'NIFTY' ? 23500 : 50000);
-    
-    // Fetch option tokens
-    const tokens = await fetchOptionTokens(symbol, expiry, spotPrice, numStrikes, api_key);
-    
-    // Login to Angel One
-    const jwtToken = await loginAngelOne(client_code, pin, totp, api_key);
-    
-    const connectionId = Math.random().toString(36).substring(7);
-    
-    // Store session
-    clientConnections.set(connectionId, { symbol, expiry, numStrikes, tokens, jwtToken });
-    
-    console.log('✅ Login successful for client:', client_code);
-    
-    res.json({ 
-      success: true, 
-      connectionId, 
-      token: jwtToken, 
-      tokens,
-      message: "Connected to Angel One successfully"
+    const { apiKey, clientCode, pin, totpSecret, saveSession } = req.body;
+
+    // Validate input
+    if (!apiKey || !clientCode || !pin || !totpSecret) {
+      return res.status(400).json({
+        success: false,
+        message: 'All credentials are required'
+      });
+    }
+
+    // Create auth instance and login
+    const auth = new AngelOneAuth(apiKey, clientCode, pin, totpSecret);
+    const loginResult = await auth.login();
+
+    if (loginResult.success) {
+      const responseData = {
+        success: true,
+        message: loginResult.message,
+        jwtToken: loginResult.jwtToken
+      };
+
+      // Add session expiry if requested
+      if (saveSession) {
+        const sessionExpiry = getMidnight();
+        responseData.sessionExpiry = sessionExpiry.toISOString();
+        
+        // Store session
+        activeSessions.set(loginResult.jwtToken, {
+          expiry: sessionExpiry,
+          clientCode: clientCode
+        });
+      }
+
+      console.log('Login successful for client:', clientCode);
+      return res.json(responseData);
+    } else {
+      console.log('Login failed:', loginResult.message);
+      return res.status(401).json({
+        success: false,
+        message: loginResult.message
+      });
+    }
+
+  } catch (error) {
+    console.error('Server login error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error'
     });
-    
-  } catch (e) {
-    console.error('❌ Login error:', e.toString());
-    res.status(500).json({ success: false, error: e.toString() });
   }
 });
