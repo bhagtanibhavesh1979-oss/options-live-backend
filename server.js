@@ -1,7 +1,7 @@
-// Add these routes to your existing server.js
-
-// Serve the web test page
+// Serve the web test page - UPDATED VERSION
 app.get('/web-test', (req, res) => {
+  const baseUrl = 'https://options-live-backend.onrender.com';
+  
   res.send(`
 <!DOCTYPE html>
 <html>
@@ -49,6 +49,8 @@ app.get('/web-test', (req, res) => {
     <div id="result"></div>
 
     <script>
+        const API_BASE_URL = '${baseUrl}';
+        
         async function testLogin() {
             const apiKey = document.getElementById('apiKey').value;
             const clientCode = document.getElementById('clientCode').value;
@@ -69,7 +71,7 @@ app.get('/web-test', (req, res) => {
             resultDiv.innerHTML = '<div class="result loading">Testing connection to Angel One... ⏳</div>';
             
             try {
-                const response = await fetch('/api/test-login', {
+                const response = await fetch(API_BASE_URL + '/api/test-login', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -113,6 +115,11 @@ app.get('/web-test', (req, res) => {
                         <h3>❌ NETWORK ERROR</h3>
                         <p><strong>Error:</strong> \${error.message}</p>
                         <p><em>Check if your Render service is running</em></p>
+                        <p><strong>Debug Info:</strong></p>
+                        <ul>
+                            <li>API URL: \${API_BASE_URL + '/api/test-login'}</li>
+                            <li>Status: \${error.status || 'Unknown'}</li>
+                        </ul>
                     </div>
                 \`;
             } finally {
@@ -127,66 +134,10 @@ app.get('/web-test', (req, res) => {
                 testLogin();
             }
         });
+        
+        console.log('Web test loaded. API Base URL:', API_BASE_URL);
     </script>
 </body>
 </html>
   `);
-});
-
-// Keep your existing API endpoints
-app.get('/', (req, res) => {
-  res.json({ 
-    message: 'Angel One API Server is running!',
-    endpoints: {
-      webTest: '/web-test',
-      apiTest: '/api/test-login (POST)',
-      marketData: '/api/market-data (GET)'
-    }
-  });
-});
-
-// Your existing /api/test-login endpoint remains the same
-app.post('/api/test-login', async (req, res) => {
-  try {
-    const { apiKey, clientCode, pin, totpSecret } = req.body;
-
-    if (!apiKey || !clientCode || !pin || !totpSecret) {
-      return res.status(400).json({
-        success: false,
-        message: 'All credentials are required'
-      });
-    }
-
-    const auth = new AngelOneAuth(apiKey, clientCode, pin, totpSecret);
-    const loginResult = await auth.login();
-
-    if (loginResult.success) {
-      // Get market data
-      const marketData = await auth.getMarketData(loginResult.jwtToken);
-      
-      res.json({
-        success: true,
-        message: loginResult.message,
-        jwtToken: loginResult.jwtToken,
-        marketData: marketData.success ? {
-          spotPrice: marketData.spotPrice,
-          message: 'Market data fetched successfully'
-        } : { 
-          message: marketData.error,
-          spotPrice: null
-        }
-      });
-    } else {
-      res.status(401).json({
-        success: false,
-        message: loginResult.message
-      });
-    }
-
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Server error: ' + error.message
-    });
-  }
 });
