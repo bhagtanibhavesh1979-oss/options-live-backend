@@ -1,12 +1,8 @@
 {
   "dependencies": {
-    "react-native": "0.72.0",
-    "@react-native-async-storage/async-storage": "^1.19.0",
-    "react": "18.2.0",
     "express": "^4.18.0",
-    "cors": "^2.8.5",
+    "cors": "^2.8.5", 
     "axios": "^1.5.0",
-    "speakeasy": "^2.0.0",
-    "dotenv": "^16.3.0"
+    "speakeasy": "^2.0.0"
   }
 }
