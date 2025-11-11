@@ -1,4 +1,171 @@
-// Serve the web test page - UPDATED VERSION
+const express = require('express');
+const cors = require('cors');
+const axios = require('axios');
+const speakeasy = require('speakeasy');
+
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// Session storage
+const activeSessions = new Map();
+
+class AngelOneAuth {
+  constructor(apiKey, clientCode, pin, totpSecret) {
+    this.apiKey = apiKey;
+    this.clientCode = clientCode;
+    this.pin = pin;
+    this.totpSecret = totpSecret;
+    this.jwtToken = null;
+  }
+
+  generateTOTP() {
+    try {
+      return speakeasy.totp({
+        secret: this.totpSecret,
+        encoding: 'base32'
+      });
+    } catch (error) {
+      throw new Error('Invalid TOTP secret');
+    }
+  }
+
+  async login() {
+    try {
+      const totp = this.generateTOTP();
+      
+      const loginUrl = "https://apiconnect.angelbroking.com/rest/auth/angelbroking/user/v1/loginByPassword";
+      
+      const payload = {
+        "clientcode": this.clientCode,
+        "password": this.pin,
+        "totp": totp
+      };
+      
+      const headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-UserType": "USER",
+        "X-SourceID": "WEB",
+        "X-ClientLocalIP": "192.168.0.1",
+        "X-ClientPublicIP": "106.193.147.98", 
+        "X-MACAddress": "00-1B-44-11-3A-B7",
+        "X-PrivateKey": this.apiKey
+      };
+
+      console.log('🔐 Attempting login for client:', this.clientCode);
+      const response = await axios.post(loginUrl, payload, { 
+        headers, 
+        timeout: 10000 
+      });
+      
+      const responseData = response.data;
+      
+      if (responseData.status === true) {
+        this.jwtToken = responseData.data.jwtToken;
+        console.log('✅ Login successful for:', this.clientCode);
+        return {
+          success: true,
+          message: "Login successful",
+          jwtToken: this.jwtToken
+        };
+      } else {
+        console.log('❌ Login failed:', responseData.message);
+        return {
+          success: false,
+          message: responseData.message || 'Login failed'
+        };
+      }
+      
+    } catch (error) {
+      console.log('💥 Login error:', error.response?.data || error.message);
+      return {
+        success: false,
+        message: error.response?.data?.message || error.message || 'Login error'
+      };
+    }
+  }
+
+  async getMarketData(jwtToken) {
+    try {
+      const headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-UserType": "USER",
+        "X-SourceID": "WEB",
+        "X-ClientLocalIP": "192.168.0.1",
+        "X-ClientPublicIP": "106.193.147.98",
+        "X-MACAddress": "00-1B-44-11-3A-B7",
+        "X-PrivateKey": this.apiKey,
+        "Authorization": `Bearer ${jwtToken}`
+      };
+
+      const ltpUrl = "https://apiconnect.angelbroking.com/rest/secure/angelbroking/market/v1/quote/";
+      const payload = {
+        "mode": "LTP",
+        "exchangeTokens": {
+          "NSE": ["99926000"] // NIFTY 50
+        }
+      };
+
+      const response = await axios.post(ltpUrl, payload, { headers, timeout: 10000 });
+      
+      if (response.data.status === true) {
+        return {
+          success: true,
+          spotPrice: response.data.data.fetched[0]?.ltp,
+          data: response.data
+        };
+      } else {
+        return {
+          success: false,
+          error: response.data.message
+        };
+      }
+
+    } catch (error) {
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+}
+
+function getMidnight() {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+}
+
+// ==================== ROUTES ====================
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'Angel One API Server is running!',
+    endpoints: {
+      webTest: '/web-test',
+      apiTest: '/api/test',
+      loginTest: '/api/test-login (POST)',
+      marketData: '/api/market-data (GET)'
+    },
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Simple test endpoint
+app.get('/api/test', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    message: 'API is working!',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Web test page
 app.get('/web-test', (req, res) => {
   const baseUrl = 'https://options-live-backend.onrender.com';
   
@@ -140,4 +307,87 @@ app.get('/web-test', (req, res) => {
 </body>
 </html>
   `);
+});
+
+// Login test endpoint
+app.post('/api/test-login', async (req, res) => {
+  try {
+    const { apiKey, clientCode, pin, totpSecret } = req.body;
+
+    if (!apiKey || !clientCode || !pin || !totpSecret) {
+      return res.status(400).json({
+        success: false,
+        message: 'All credentials are required'
+      });
+    }
+
+    const auth = new AngelOneAuth(apiKey, clientCode, pin, totpSecret);
+    const loginResult = await auth.login();
+
+    if (loginResult.success) {
+      // Get market data
+      const marketData = await auth.getMarketData(loginResult.jwtToken);
+      
+      res.json({
+        success: true,
+        message: loginResult.message,
+        jwtToken: loginResult.jwtToken,
+        marketData: marketData.success ? {
+          spotPrice: marketData.spotPrice,
+          message: 'Market data fetched successfully'
+        } : { 
+          message: marketData.error,
+          spotPrice: null
+        }
+      });
+    } else {
+      res.status(401).json({
+        success: false,
+        message: loginResult.message
+      });
+    }
+
+  } catch (error) {
+    console.error('Server login error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Internal server error: ' + error.message
+    });
+  }
+});
+
+// Market data endpoint (protected)
+app.get('/api/market-data', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    
+    if (!token) {
+      return res.status(401).json({ error: 'No token provided' });
+    }
+
+    // Check if session is valid
+    const session = activeSessions.get(token);
+    if (!session || new Date() > session.expiry) {
+      activeSessions.delete(token);
+      return res.status(401).json({ error: 'Session expired' });
+    }
+
+    // Mock market data for testing
+    res.json({
+      spotPrice: 19500,
+      expiry: "15DEC2024",
+      daysToExpiry: 5,
+      message: "Market data fetched successfully"
+    });
+
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch market data' });
+  }
+});
+
+// Start server
+app.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`📍 Local: http://localhost:${PORT}`);
+  console.log(`📍 Web Test: https://options-live-backend.onrender.com/web-test`);
 });
